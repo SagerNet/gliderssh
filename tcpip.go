@@ -192,16 +192,19 @@ func bicopy(ctx context.Context, c1, c2 io.ReadWriteCloser) {
 	defer c2.Close()
 
 	var wg sync.WaitGroup
-	wg.Go(func() {
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
 		defer halfCloseWrite(c1) // done writing to destination
 		defer halfCloseRead(c2)  // done reading from source
 		_, _ = io.Copy(c1, c2)
-	})
-	wg.Go(func() {
+	}()
+	go func() {
+		defer wg.Done()
 		defer halfCloseWrite(c2) // done writing to destination
 		defer halfCloseRead(c1)  // done reading from source
 		_, _ = io.Copy(c2, c1)
-	})
+	}()
 
 	done := make(chan struct{})
 	go func() {
