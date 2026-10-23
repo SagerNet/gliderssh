@@ -326,46 +326,53 @@ func validateSocketPath(socketPath string, opts UnixForwardingOptions) (string, 
 	}
 
 	if !opts.AllowAll {
-		if len(opts.AllowedDirectories) == 0 {
-			return "", &rejectionError{
-				reason: fmt.Sprintf("socket path %q is not in an allowed directory", cleaned),
-			}
-		}
-
-		allowed := false
-		for _, dir := range opts.AllowedDirectories {
-			prefix := filepath.Clean(dir)
-			if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-				prefix += string(filepath.Separator)
-			}
-			if strings.HasPrefix(cleaned, prefix) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return "", &rejectionError{
-				reason: fmt.Sprintf("socket path %q is not in an allowed directory", cleaned),
-			}
-		}
-
-		for _, denied := range opts.DeniedPrefixes {
-			prefix := filepath.Clean(denied)
-			if cleaned == prefix || strings.HasPrefix(cleaned, prefix+string(filepath.Separator)) {
-				return "", &rejectionError{
-					reason: fmt.Sprintf("socket path %q is denied", cleaned),
-				}
-			}
+		err := checkSocketPathAllowed(cleaned, opts)
+		if err != nil {
+			return "", err
 		}
 	}
 
 	return cleaned, nil
 }
 
+func checkSocketPathAllowed(socketPath string, opts UnixForwardingOptions) error {
+	if len(opts.AllowedDirectories) == 0 {
+		return &rejectionError{
+			reason: fmt.Sprintf("socket path %q is not in an allowed directory", socketPath),
+		}
+	}
+
+	allowed := false
+	for _, dir := range opts.AllowedDirectories {
+		prefix := filepath.Clean(dir)
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		if strings.HasPrefix(socketPath, prefix) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return &rejectionError{
+			reason: fmt.Sprintf("socket path %q is not in an allowed directory", socketPath),
+		}
+	}
+
+	for _, denied := range opts.DeniedPrefixes {
+		prefix := filepath.Clean(denied)
+		if socketPath == prefix || strings.HasPrefix(socketPath, prefix+string(filepath.Separator)) {
+			return &rejectionError{
+				reason: fmt.Sprintf("socket path %q is denied", socketPath),
+			}
+		}
+	}
+	return nil
+}
+
 // validateAndResolveSocketPath validates socketPath lexically, then resolves
 // its symlinks and re-checks that the real destination is still within
-// opts.AllowedDirectories and not excluded by opts.DeniedPrefixes. It returns
-// the resolved path to dial.
+// opts.AllowedDirectories and not excluded by opts.DeniedPrefixes.
 //
 // The lexical check alone is insufficient because the kernel connects to the
 // symlink target: a symlink inside an allowed directory could otherwise
@@ -394,16 +401,16 @@ func validateAndResolveSocketPath(socketPath string, opts UnixForwardingOptions)
 
 	opts.AllowedDirectories = resolvePrefixes(opts.AllowedDirectories)
 	opts.DeniedPrefixes = resolvePrefixes(opts.DeniedPrefixes)
-	if _, err := validateSocketPath(resolved, opts); err != nil {
+	err = checkSocketPathAllowed(resolved, opts)
+	if err != nil {
 		return "", err
 	}
-	return resolved, nil
+	return cleaned, nil
 }
 
 // validateAndResolveListenPath validates socketPath, then resolves symlinks in its
 // parent directory and re-checks that the real bind location is still within
-// opts.AllowedDirectories and not excluded by opts.DeniedPrefixes. It returns the
-// resolved path to bind.
+// opts.AllowedDirectories and not excluded by opts.DeniedPrefixes.
 //
 // Unlike validateAndResolveSocketPath, the socket file itself does not yet have to exist.
 func validateAndResolveListenPath(socketPath string, opts UnixForwardingOptions) (string, error) {
@@ -426,7 +433,8 @@ func validateAndResolveListenPath(socketPath string, opts UnixForwardingOptions)
 	resolved := filepath.Join(resolvedDir, filepath.Base(cleaned))
 	opts.AllowedDirectories = resolvePrefixes(opts.AllowedDirectories)
 	opts.DeniedPrefixes = resolvePrefixes(opts.DeniedPrefixes)
-	if _, err := validateSocketPath(resolved, opts); err != nil {
+	err = checkSocketPathAllowed(resolved, opts)
+	if err != nil {
 		return "", err
 	}
 	// Technically a symlink wont be able to bind(), but for clarity and defense in depth check it
@@ -434,7 +442,7 @@ func validateAndResolveListenPath(socketPath string, opts UnixForwardingOptions)
 		return "", &rejectionError{reason: fmt.Sprintf("socket path %q is a symlink", resolved)}
 	}
 
-	return resolved, nil
+	return cleaned, nil
 }
 
 // resolvePrefixes returns prefixes with each entry's symlinks resolved.
@@ -461,18 +469,18 @@ func NewLocalUnixForwardingCallback(opts UnixForwardingOptions) LocalUnixForward
 		}
 	}
 	return func(ctx Context, socketPath string) (net.Conn, error) {
-		resolved, err := validateAndResolveSocketPath(socketPath, opts)
+		cleaned, err := validateAndResolveSocketPath(socketPath, opts)
 		if err != nil {
 			return nil, err
 		}
 		if opts.PathValidator != nil {
-			if err := opts.PathValidator(ctx, resolved); err != nil {
+			if err := opts.PathValidator(ctx, cleaned); err != nil {
 				return nil, err
 			}
 		}
 
 		var d net.Dialer
-		return d.DialContext(ctx, "unix", resolved)
+		return d.DialContext(ctx, "unix", cleaned)
 	}
 }
 
